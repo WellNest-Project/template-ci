@@ -58,16 +58,14 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ── DEV: tag with shortsha ──────────────────────────────
-      - name: Set Dev Image Tag (shortsha)
+      - name: Set Dev Image Tag
         if: ${{ inputs.environment == 'dev' }}
         id: dev_tag
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           echo "image_tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
 
-      # ── PROD: tag with semver ───────────────────────────────
-      - name: Determine Semantic Version (prod only)
+      - name: Determine Semantic Version
         if: ${{ inputs.environment == 'prod' }}
         id: semver
         uses: mathieudutour/github-tag-action@v6.2
@@ -79,17 +77,16 @@ jobs:
           custom_release_rules: "feature:minor:Features,breaking:major:Breaking Changes"
           dry_run: false
 
-      - name: Set Prod Image Tag (semver)
+      - name: Set Prod Image Tag
         if: ${{ inputs.environment == 'prod' }}
         id: prod_tag
         run: |
           echo "image_tag=v${{ steps.semver.outputs.new_version }}" >> $GITHUB_OUTPUT
 
-      # ── Unified tag output ──────────────────────────────────
       - name: Set Final Image Tag
         id: meta
         run: |
-          if [ "${{ inputs.environment }}" == "dev" ]; then
+          if [ "${{ inputs.environment }}" = "dev" ]; then
             IMAGE_TAG="${{ steps.dev_tag.outputs.image_tag }}"
           else
             IMAGE_TAG="${{ steps.prod_tag.outputs.image_tag }}"
@@ -97,25 +94,18 @@ jobs:
 
           IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.docker_image_name }}"
 
-          echo "image_tag=${IMAGE_TAG}"          >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "full_image=${IMAGE}:${IMAGE_TAG}" >> $GITHUB_OUTPUT
 
-          echo "════════════════════════════════════════"
-          echo "  Environment : ${{ inputs.environment }}"
-          echo "  Image       : ${IMAGE}"
-          echo "  Tag         : ${IMAGE_TAG}"
-          echo "════════════════════════════════════════"
-
-      - name: "4. Build Docker Image"
+      - name: Build Docker Image
         run: |
           docker build \
             -t ${{ steps.meta.outputs.full_image }} \
             -f ${{ inputs.service_path }}/Dockerfile \
             ${{ inputs.service_path }}
 
-      - name: "5. Trivy — Container Scan"
+      - name: Trivy Container Scan
         uses: aquasecurity/trivy-action@master
-        continue-on-error: true
         with:
           image-ref: ${{ steps.meta.outputs.full_image }}
           format: table
@@ -123,10 +113,9 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
 
-      - name: "6. Push Docker Image to DockerHub"
+      - name: Push Docker Image to DockerHub
         run: |
           docker push ${{ steps.meta.outputs.full_image }}
-          echo "Pushed: ${{ steps.meta.outputs.full_image }}"
 
       - name: Send Email on Failure
         if: failure()
