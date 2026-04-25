@@ -1,0 +1,172 @@
+name: "Template — CD Manifest Update"
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Human-readable service name"
+        required: true
+        type: string
+      values_key:
+        description: "Key in values file e.g. auth, assessment, therapist, frontend"
+        required: true
+        type: string
+      image_tag:
+        description: "New Docker image tag"
+        required: true
+        type: string
+      environment:
+        description: "dev or prod"
+        required: true
+        type: string
+    secrets:
+      MANIFEST_REPO_PAT:
+        required: true
+      SMTP_USERNAME:
+        required: true
+      SMTP_PASSWORD:
+        required: true
+      ALERT_EMAIL:
+        required: true
+
+jobs:
+  update-manifest:
+    name: "7. CD — ${{ inputs.service_name }} → ${{ inputs.environment }}"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout manifest_repo
+        uses: actions/checkout@v4
+        with:
+          repository: WellNest-Project/manifest_repo
+          token: ${{ secrets.MANIFEST_REPO_PAT }}
+          ref: main
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      # ── DEV: update values-dev.yaml only ───────────────────
+      - name: Update values-dev.yaml
+        if: ${{ inputs.environment == 'dev' }}
+        run: |
+          echo "=== Updating values-dev.yaml ==="
+          echo "Current tag:"
+          yq '.${{ inputs.values_key }}.image.tag' \
+            helm/wellnest/values-dev.yaml
+
+          yq -i \
+            '.${{ inputs.values_key }}.image.tag = "${{ inputs.image_tag }}"' \
+            helm/wellnest/values-dev.yaml
+
+          echo "New tag:"
+          yq '.${{ inputs.values_key }}.image.tag' \
+            helm/wellnest/values-dev.yaml
+
+      # ── PROD: update both values.yaml AND values-prod.yaml ──
+      - name: Update values-prod.yaml and values.yaml
+        if: ${{ inputs.environment == 'prod' }}
+        run: |
+          echo "=== Updating values-prod.yaml ==="
+          echo "Current tag:"
+          yq '.${{ inputs.values_key }}.image.tag' \
+            helm/wellnest/values-prod.yaml
+
+          yq -i \
+            '.${{ inputs.values_key }}.image.tag = "${{ inputs.image_tag }}"' \
+            helm/wellnest/values-prod.yaml
+
+          echo "New tag:"
+          yq '.${{ inputs.values_key }}.image.tag' \
+            helm/wellnest/values-prod.yaml
+
+          echo "=== Updating values.yaml ==="
+          echo "Current tag:"
+          yq '.${{ inputs.values_key }}.image.tag' \
+            helm/wellnest/values.yaml
+
+          yq -i \
+            '.${{ inputs.values_key }}.image.tag = "${{ inputs.image_tag }}"' \
+            helm/wellnest/values.yaml
+
+          echo "New tag:"
+          yq '.${{ inputs.values_key }}.image.tag' \
+            helm/wellnest/values.yaml
+
+      # ── Commit and Push ─────────────────────────────────────
+      - name: Commit and Push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add helm/wellnest/values-dev.yaml \
+                  helm/wellnest/values-prod.yaml \
+                  helm/wellnest/values.yaml
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit — tag already up to date"
+            exit 0
+          fi
+
+          git commit -m \
+            "cd(${{ inputs.service_name }}): [${{ inputs.environment }}] image → ${{ inputs.image_tag }}"
+
+          for i in 1 2 3 4 5; do
+            git push && break
+            echo "Push failed, retry $i/5..."
+            git pull --rebase origin main
+            sleep $((i * 2))
+          done
+
+      # ── Email Notifications ─────────────────────────────────
+      - name: Send Success Email
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "WellNest CD — ${{ inputs.service_name }} [${{ inputs.environment }}] → ${{ inputs.image_tag }}"
+          to: ${{ secrets.ALERT_EMAIL }}
+          from: WellNest CD Pipeline
+          body: |
+            ════════════════════════════════════════════════════
+            WellNest CD — Manifest Updated Successfully
+            ════════════════════════════════════════════════════
+
+            Service     : ${{ inputs.service_name }}
+            Environment : ${{ inputs.environment }}
+            New Tag     : ${{ inputs.image_tag }}
+            Triggered By: ${{ github.actor }}
+
+            Files Updated:
+            ${{ inputs.environment == 'prod' && '- helm/wellnest/values.yaml' || '' }}
+            ${{ inputs.environment == 'prod' && '- helm/wellnest/values-prod.yaml' || '- helm/wellnest/values-dev.yaml' }}
+
+            ArgoCD will auto-sync within 3 minutes.
+
+            manifest_repo: https://github.com/WellNest-Project/manifest_repo
+            ════════════════════════════════════════════════════
+
+      - name: Send Failure Email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "WellNest CD Failed — ${{ inputs.service_name }} [${{ inputs.environment }}]"
+          to: ${{ secrets.ALERT_EMAIL }}
+          from: WellNest CD Pipeline
+          body: |
+            CD manifest update FAILED for: ${{ inputs.service_name }}
+
+            Environment: ${{ inputs.environment }}
+            Image Tag  : ${{ inputs.image_tag }}
+            Author     : ${{ github.actor }}
+
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

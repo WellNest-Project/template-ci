@@ -1,0 +1,69 @@
+name: "Template — SonarQube Analysis"
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Human-readable service name (e.g. wellnest-auth)"
+        required: true
+        type: string
+      service_path:
+        description: "Path to the service directory relative to repo root"
+        required: true
+        type: string
+      sonar_project_key:
+        description: "SonarQube project key"
+        required: true
+        type: string
+    secrets:
+      SONARQUBE_TOKEN:
+        required: true
+      SONARQUBE_URL:
+        required: true
+      SMTP_USERNAME:
+        required: true
+      SMTP_PASSWORD:
+        required: true
+      ALERT_EMAIL:
+        required: true
+
+jobs:
+  sonarqube:
+    name: "1. SonarQube — ${{ inputs.service_name }}"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube Analysis
+        uses: SonarSource/sonarqube-scan-action@v2
+        with:
+          projectBaseDir: ${{ inputs.service_path }}
+          args: >
+            -Dsonar.projectKey=${{ inputs.sonar_project_key }}
+            -Dsonar.projectName=${{ inputs.service_name }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONARQUBE_URL }}
+
+      - name: Send Email on Failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "WellNest CI Failed — SonarQube (${{ inputs.service_name }})"
+          to: ${{ secrets.ALERT_EMAIL }}
+          from: WellNest CI Pipeline
+          body: |
+            SonarQube scan FAILED for: ${{ inputs.service_name }}
+
+            Branch : ${{ github.ref_name }}
+            Commit : ${{ github.sha }}
+            Author : ${{ github.actor }}
+
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
